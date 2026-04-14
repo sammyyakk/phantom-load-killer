@@ -12,7 +12,7 @@
 |----------|----------|
 | Core Processing | ₹700 |
 | Sensing | ₹240 |
-| Power Supply | ₹230 |
+| Power Supply | ₹295 |
 | Switching & Protection | ₹280 |
 | Display & Indicators | ₹270 |
 | Passives (R, C) | ₹150 (kit) |
@@ -20,8 +20,8 @@
 | PCB & Enclosure | ₹1,010 |
 | Wiring & Misc | ₹510 |
 | Test & Safety | ₹900 |
-| **TOTAL** | **~₹3,500–4,000** |
-| **Without test equipment** | **~₹2,500–3,000** |
+| **TOTAL** | **~₹3,600–4,100** |
+| **Without test equipment** | **~₹2,600–3,100** |
 
 ---
 
@@ -54,14 +54,31 @@
 
 | # | Part | Model | Qty | Unit Price (₹) | Total (₹) | Notes |
 |---|------|-------|-----|----------------|-----------|-------|
-| 4 | Isolated AC-DC Module | HLK-PM01 (5V/600mA) | 1 | ₹175 | ₹175 | Powers relay coil (5V) + DevKit VIN (5V) |
-| 5 | Electrolytic Cap 100µF/16V | Generic radial | 3 | ₹5 | ₹15 | HLK-PM01 output filtering |
+| 4 | Isolated AC-DC Module | **HLK-5M05 (5V/1A)** | 1 | ₹250 | ₹250 | Powers relay coil (5V) + DevKit VIN (5V). 1A gives safe headroom. |
+| 5 | Electrolytic Cap 100µF/16V | Generic radial | 3 | ₹5 | ₹15 | HLK output filtering + WiFi peak absorption |
 | 6 | Ceramic Cap 100nF | 0.1µF 50V | 10 | ₹2 | ₹20 | Decoupling near DevKit header pins |
 | 7 | Electrolytic Cap 10µF/16V | Generic radial | 3 | ₹3 | ₹9 | Output filtering |
 
-> **No AMS1117 needed.** The DevKit already has an AMS1117-3.3 onboard — it converts 5V (from HLK-PM01) to 3.3V for the ESP32 chip automatically.
-> Power chain: 220V AC → HLK-PM01 → 5V → DevKit VIN pin → onboard AMS1117 → 3.3V to ESP32.
+> **Why NOT HLK-PM01 (600mA)?** Power budget hits ~520mA peak (ESP32 WiFi Tx 380mA + relay 70mA + sensors 50mA). Only 80mA headroom — brownouts and resets during demo guaranteed.
+> **HLK-5M05 (1A)** leaves ~480mA headroom. Same compact isolated brick, ₹75 more. Non-negotiable upgrade.
+>
+> **No AMS1117 needed.** The DevKit already has one onboard — it converts 5V → 3.3V for the ESP32 chip.
+> Power chain: 220V AC → HLK-5M05 → 5V → DevKit VIN pin → onboard AMS1117 → 3.3V to ESP32.
 > The 5V rail also drives the relay coil.
+
+### Power Budget (for reference)
+
+| Component | Typical (mA) | Peak (mA) |
+|---|---|---|
+| ESP32 DevKit (WiFi active) | 160 | 380 |
+| Relay coil | 70 | 70 |
+| ACS712 | 10 | 10 |
+| ZMPT101B | 20 | 20 |
+| WS2812B (3 LEDs, dim) | 20 | 20 |
+| OLED | 20 | 20 |
+| **Total** | **300mA** | **~520mA** |
+| HLK-5M05 budget | 1000mA | 1000mA |
+| **Headroom** | **700mA** | **480mA** ✓ |
 
 ---
 
