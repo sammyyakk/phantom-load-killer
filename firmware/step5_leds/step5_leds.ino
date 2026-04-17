@@ -1,18 +1,19 @@
 /*
- * Phantom Load Killer — Step 5: WS2812B Status LEDs
+ * Phantom Load Killer — Step 5: RGB Status LED
  * =============================================================
  * Adds over Step 4:
- *   - 3× WS2812B addressable RGB LEDs for at-a-glance status
- *   - LED 0 = Green (ACTIVE), LED 1 = Yellow breathing (IDLE),
- *     LED 2 = Red (CUT)
+ *   - Single 4-pin common-cathode RGB LED for at-a-glance status
+ *   - Green (ACTIVE), Yellow breathing (IDLE), Red (CUT)
+ *   - Uses ESP32 LEDC PWM — no external library needed
  *
  * Wiring (new in this step):
- *   GPIO4 ──[330Ω]──► WS2812B #0 DIN → DOUT → #1 DIN → DOUT → #2 DIN
- *   ESP32 VIN → WS2812B VCC (5V)
- *   ESP32 GND → WS2812B GND
+ *   GPIO23 --[330R]--> RGB LED Red pin
+ *   GPIO18 --[330R]--> RGB LED Green pin
+ *   GPIO19 --[330R]--> RGB LED Blue pin
+ *   RGB LED cathode (longest pin) --> ESP32 GND
  *
  * All previous wiring unchanged:
- *   GPIO34 — ACS712 output (10kΩ/22kΩ divider)
+ *   GPIO34 — ACS712 output (10k/22k divider)
  *   GPIO35 — ZMPT101B output
  *   GPIO26 — Relay module IN (via BC547 buffer)
  *   GPIO32 — Manual restore button (active LOW, internal pull-up)
@@ -20,13 +21,12 @@
  *   GPIO22 — OLED SCL
  *
  * Libraries required:
- *   Adafruit SSD1306, Adafruit GFX Library, Adafruit NeoPixel
+ *   Adafruit SSD1306, Adafruit GFX Library (OLED only)
  */
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <Adafruit_NeoPixel.h>
 
 // ── OLED Setup ───────────────────────────────────────────────────────────────
 #define SCREEN_WIDTH  128
@@ -36,12 +36,12 @@
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// ── WS2812B Setup ────────────────────────────────────────────────────────────
-#define LED_PIN       4
-#define NUM_LEDS      3
-#define LED_BRIGHT   30     // Max brightness (0-255), keep low
+// ── RGB LED Pins ─────────────────────────────────────────────────────────────
+#define LED_RED_PIN   23
+#define LED_GREEN_PIN 18
+#define LED_BLUE_PIN  19
 
-Adafruit_NeoPixel leds(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+#define LED_MAX_BRIGHT 80    // Max PWM duty (0-255), keep moderate
 
 // ── Pin Definitions ──────────────────────────────────────────────────────────
 #define ACS712_PIN    34
@@ -89,6 +89,13 @@ const char* stateName(DeviceState s) {
         case CUT:    return "CUT";
     }
     return "?";
+}
+
+// ── RGB LED helper ───────────────────────────────────────────────────────────
+void setRGB(uint8_t r, uint8_t g, uint8_t b) {
+    ledcWrite(LED_RED_PIN,   r);
+    ledcWrite(LED_GREEN_PIN, g);
+    ledcWrite(LED_BLUE_PIN,  b);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,32 +163,27 @@ float measureVoltageRMS() {
 }
 
 // ── LED update ───────────────────────────────────────────────────────────────
-void updateLEDs() {
-    leds.clear();
-
+void updateLED() {
     switch (state) {
         case ACTIVE:
-            // LED 0 = solid green
-            leds.setPixelColor(0, leds.Color(0, LED_BRIGHT, 0));
+            // Solid green
+            setRGB(0, LED_MAX_BRIGHT, 0);
             break;
 
         case IDLE: {
-            // LED 1 = yellow/amber breathing
+            // Yellow/amber breathing — sine wave, ~2 second period
             unsigned long elapsedMs = millis() - idleStartMs;
-            // Sine-based breathing: period ~2 seconds
             float phase = (float)(elapsedMs % 2000UL) / 2000.0f * 6.2832f;
-            uint8_t breath = (uint8_t)((sinf(phase) * 0.5f + 0.5f) * LED_BRIGHT);
-            leds.setPixelColor(1, leds.Color(breath, breath / 2, 0));
+            uint8_t breath = (uint8_t)((sinf(phase) * 0.5f + 0.5f) * LED_MAX_BRIGHT);
+            setRGB(breath, breath / 2, 0);   // R+half-G = yellow/amber
             break;
         }
 
         case CUT:
-            // LED 2 = solid red
-            leds.setPixelColor(2, leds.Color(LED_BRIGHT, 0, 0));
+            // Solid red
+            setRGB(LED_MAX_BRIGHT, 0, 0);
             break;
     }
-
-    leds.show();
 }
 
 // ── OLED update ──────────────────────────────────────────────────────────────
@@ -239,11 +241,11 @@ void setup() {
     // Button with internal pull-up
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-    // WS2812B init
-    leds.begin();
-    leds.setBrightness(LED_BRIGHT);
-    leds.clear();
-    leds.show();
+    // RGB LED init — LEDC PWM at 5kHz, 8-bit resolution
+    ledcAttach(LED_RED_PIN,   5000, 8);
+    ledcAttach(LED_GREEN_PIN, 5000, 8);
+    ledcAttach(LED_BLUE_PIN,  5000, 8);
+    setRGB(0, 0, 0);   // Off at boot
 
     // OLED init
     Wire.begin(21, 22);
@@ -264,12 +266,12 @@ void setup() {
     analogSetAttenuation(ADC_11db);
 
     Serial.print("\r\n============================================\r\n");
-    Serial.print(" Phantom Load Killer — Step 5: LEDs        \r\n");
+    Serial.print(" Phantom Load Killer — Step 5: RGB LED     \r\n");
     Serial.print("============================================\r\n");
     Serial.printf(" Active threshold : %.2f A\r\n", ACTIVE_THRESHOLD_A);
     Serial.printf(" Idle timeout     : %d sec\r\n", IDLE_TIMEOUT_SEC);
     Serial.print(" OLED             : SSD1306 128x64 I2C\r\n");
-    Serial.print(" LEDs             : 3x WS2812B on GPIO4\r\n");
+    Serial.print(" RGB LED          : GPIO23(R) GPIO18(G) GPIO19(B)\r\n");
     Serial.print("\r\nCalibrating (ensure no load)...\r\n");
     delay(1000);
     calibrateZero();
@@ -342,9 +344,9 @@ void loop() {
     Serial.printf("  %s |  %5.1f V  |  %5.3f A  |  %5.1f W  |  %s\r\n",
                   stateName(state), V, I, W, statusBuf);
 
-    // ── OLED + LEDs ──────────────────────────────────────────────────────
+    // ── OLED + LED ───────────────────────────────────────────────────────
     updateDisplay(V, I, W);
-    updateLEDs();
+    updateLED();
 
     delay(500);
 }
