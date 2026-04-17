@@ -1,7 +1,8 @@
-# Step 3 — Circuit Diagram: Relay Control + Manual Button
+# Step 3 — Circuit Diagram: Relay Module + Manual Button
 
 > Builds on Step 1 wiring (ACS712 + ZMPT101B). Keep all existing connections.
-> This file covers only the new additions: relay driver and manual button.
+> Uses a **relay module** (not a bare relay) — transistor, flyback diode, and driver
+> are already built into the module. Only 3 wires needed on the control side.
 
 ---
 
@@ -17,73 +18,51 @@
          │                                                  │
          │  VIN (5V out) ──┬──────────────────────────────►│ ACS712 VCC
          │                 ├──────────────────────────────►│ ZMPT101B VCC
-         │                 └──────────────────────────────►│ Relay coil (+) [NEW]
+         │                 └──────────────────────────────►│ Relay module VCC [NEW]
          │                                                  │
          │  GND ───────────┬──────────────────────────────►│ ACS712 GND
          │                 ├──────────────────────────────►│ ZMPT101B GND
-         │                 ├──────────────────────────────►│ PC817 cathode  [NEW]
-         │                 └──────────────────────────────►│ BC547 emitter  [NEW]
+         │                 └──────────────────────────────►│ Relay module GND [NEW]
          │                                                  │
          │  GPIO34 ─────────────────── ACS712 VOUT (÷ divider)
          │  GPIO35 ─────────────────── ZMPT101B VOUT
-         │  GPIO33 ─────────────────── Relay driver input   [NEW]
+         │  GPIO26 ──[1kΩ]──► BC547 Base → BC547 Collector → Relay module IN [NEW]
          │  GPIO32 ─────────────────── Manual button        [NEW]
          └──────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Relay Driver Circuit
+## 2. Relay Module Wiring
 
-**Why not drive the relay directly from GPIO?**
-ESP32 GPIO: 3.3V logic, 12mA max.
-Relay coil: 5V, ~70mA. Direct connection would damage the ESP32.
-
-**Solution chain:** GPIO33 → PC817 (optocoupler) → BC547 (NPN transistor) → relay coil
+The relay module's internal pull-up to 5V is too strong for this ESP32 clone to
+pull LOW directly. A BC547 NPN transistor is used as a buffer — ESP32 drives the
+base, collector pulls relay IN hard to GND.
 
 ```
-                                              5V (VIN)
-                                                 │
-                                          Relay coil (+)
-                                                 │
-                                          Relay coil (–)──────────┐
-                                                 │                 │
-                                           BC547 collector        [1N4007]
-                                                 │              (flyback diode)
- GPIO33 ──[1kΩ]── PC817 ──[1kΩ]── BC547 base    │                 │
-                    │              BC547 emitter  │         cathode─┘ (to 5V)
-                   GND                  │         anode──────────────(to collector)
-                                       GND
+  ESP32 GPIO26 ──[1kΩ]──► BC547 Base (pin 2)
+  BC547 Emitter (pin 3) → GND
+  BC547 Collector (pin 1) → Relay module IN
+
+  Relay Module
+  ┌──────────────┐
+  │ VCC  GND  IN │  ← control side
+  │              │
+  │ NO  COM  NC  │  ← AC side (mains voltage)
+  └──────────────┘
+
+  VCC → ESP32 VIN  (5V)
+  GND → ESP32 GND
+  IN  → BC547 Collector
 ```
 
-### Step-by-step connections
+**Logic (now active HIGH from ESP32's perspective):**
+- GPIO26 HIGH → BC547 conducts → Relay IN pulled to GND → relay energises → **load ON**
+- GPIO26 LOW  → BC547 off → Relay IN floats high → relay de-energises → **load cut**
 
-```
-GPIO33
-  │
- [1kΩ]                     ← limits LED current to ~2mA
-  │
-PC817 pin 1  (Anode)       ← current into LED turns on internal transistor
-PC817 pin 2  (Cathode) ── GND
-PC817 pin 4  (Collector)
-  │
- [1kΩ]                     ← base current limiter for BC547
-  │
-BC547 pin 2  (Base)
-BC547 pin 3  (Emitter) ── GND
-BC547 pin 1  (Collector)
-  │
-  ├── Relay coil (–)
-  │
-  └── 1N4007 Anode         ← flyback diode — MANDATORY
-
-Relay coil (+) ── 5V (ESP32 VIN)
-1N4007 Cathode ── 5V (ESP32 VIN)   ← completes flyback path
-
-Relay NO  ── Mains Live out  (to load socket)
-Relay COM ── Mains Live in   (from ACS712 IP–)
-Relay NC  ── leave unconnected
-```
+> Firmware uses RELAY_ON = LOW, RELAY_OFF = HIGH for active LOW module.
+> BC547 inverts: GPIO HIGH → relay IN LOW. So firmware must be flipped:
+> **RELAY_ON = HIGH, RELAY_OFF = LOW** when using BC547 buffer.
 
 ---
 
@@ -133,20 +112,18 @@ Safety rules:
 |---|---|---|
 | ESP32 VIN | ACS712 VCC | Red |
 | ESP32 VIN | ZMPT101B VCC | Red |
-| ESP32 VIN | Relay coil (+) | Red |
-| ESP32 VIN | 1N4007 Cathode | Red |
+| ESP32 VIN | Relay module VCC | Red |
 | ESP32 GND | ACS712 GND | Black |
 | ESP32 GND | ZMPT101B GND | Black |
-| ESP32 GND | PC817 pin 2 (Cathode) | Black |
-| ESP32 GND | BC547 pin 3 (Emitter) | Black |
+| ESP32 GND | Relay module GND | Black |
 | ESP32 GPIO34 | ACS712 divider midpoint | Yellow |
 | ESP32 GPIO35 | ZMPT101B VOUT | Yellow |
-| ESP32 GPIO33 | 1kΩ → PC817 pin 1 | Orange |
-| PC817 pin 4 (Collector) | 1kΩ → BC547 pin 2 (Base) | Blue |
-| BC547 pin 1 (Collector) | Relay coil (–) | Blue |
-| BC547 pin 1 (Collector) | 1N4007 Anode | Blue |
-| Relay COM | Mains Live in (from ACS712) | Brown |
-| Relay NO | Mains Live out (to load) | Brown |
+| ESP32 GPIO26 | 1kΩ resistor leg A | Orange |
+| 1kΩ resistor leg B | BC547 Base (pin 2) | Orange |
+| BC547 Emitter (pin 3) | GND | Black |
+| BC547 Collector (pin 1) | Relay module IN | Orange |
+| Relay module VCC | ESP32 VIN | Red |
+| Relay module GND | ESP32 GND | Black |
 | ESP32 GPIO32 | Button pin A | Green |
 | Button pin B | GND | Black |
 | ACS712 VOUT | 10kΩ top leg | Yellow |
@@ -155,77 +132,38 @@ Safety rules:
 
 ---
 
-## 6. Component Pinouts
-
-### PC817 Optocoupler (DIP-4, top view)
+## 6. Relay Module AC Pinout
 
 ```
-        ┌── notch ──┐
-  Anode │1         4│ Collector   ┐ transistor
-Cathode │2         3│ Emitter     ┘ side
-        └───────────┘
-         LED side
-
-  pin 1 (Anode)    ← [1kΩ] ← GPIO33
-  pin 2 (Cathode)  → GND
-  pin 4 (Collector)→ [1kΩ] → BC547 Base
-  pin 3 (Emitter)  → GND
-```
-
-### BC547 NPN Transistor (TO-92, flat face towards you)
-
-```
-   Flat face:
-   ┌─────────┐
-   │ C  B  E │
-   │ 1  2  3 │
-   └──┘ └──┘
-      legs
-
-  pin 1  Collector → Relay coil (–) and 1N4007 Anode
-  pin 2  Base      ← [1kΩ] ← PC817 pin 4 (Collector)
-  pin 3  Emitter   → GND
-```
-
-### SRD-05VDC-SL-C Relay (top view, pins facing you)
-
-```
+  Top of module (AC contacts side):
   ┌────────────────────────┐
-  │  [COIL]   [CONTACTS]   │
-  │   +   –   NO  COM  NC  │
+  │   NO      COM     NC   │
   └────────────────────────┘
 
-  Coil (+) → 5V
-  Coil (–) → BC547 Collector
-  NO       → Mains Live out (to load)
-  COM      → Mains Live in  (from ACS712)
-  NC       → not connected
+  NO  → Mains Live out (to load socket)
+  COM → Mains Live in  (from ACS712 IP–)
+  NC  → leave unconnected
 ```
-
-### 1N4007 Flyback Diode
-
-```
-  Anode ──►|── Cathode
-               (silver band = cathode)
-
-  Anode   → BC547 Collector  (= Relay coil –)
-  Cathode → 5V rail          (= Relay coil +)
-```
-
-Without this diode: relay coil generates a voltage spike when switched off
-that can exceed 50V and instantly destroy the BC547 or the ESP32.
 
 ---
 
 ## 7. Logic Table
 
-| GPIO33 | PC817 LED | BC547 | Relay | Load |
-|--------|-----------|-------|-------|------|
-| HIGH   | ON        | Saturated (conducting) | Energised (coil active) | ✅ Power ON |
-| LOW    | OFF       | Cut off               | De-energised            | ❌ Power OFF |
+BC547 inverts the signal — ESP32 drives HIGH to energise relay.
+
+| GPIO26 | BC547 | Relay IN | Relay | Load |
+|--------|-------|----------|-------|------|
+| HIGH | Saturated | ~0V (GND) | Energised | ✅ Power ON |
+| LOW | Cut off | ~5V (pulled up) | De-energised | ❌ Power OFF |
+
+**Firmware defines (with BC547 buffer):**
+```cpp
+#define RELAY_ON  HIGH   // GPIO HIGH → BC547 on → relay IN LOW → relay energises
+#define RELAY_OFF LOW    // GPIO LOW  → BC547 off → relay de-energises
+```
 
 **Boot sequence:**
-1. `pinMode(RELAY_PIN, OUTPUT)` + `digitalWrite(RELAY_PIN, HIGH)` — relay closes before calibration runs
+1. `pinMode(RELAY_PIN, OUTPUT)` + `setRelay(true)` → GPIO26 goes HIGH → BC547 conducts → relay closes
 2. Load has power throughout startup and calibration
-3. Power only cuts when firmware explicitly sets GPIO33 LOW (CUT state)
-4. Button on GPIO32 sets GPIO33 HIGH again → relay closes → ACTIVE state
+3. Power cuts when firmware sets GPIO26 LOW (CUT state)
+4. Button on GPIO32 sets GPIO26 HIGH again → relay closes → ACTIVE state

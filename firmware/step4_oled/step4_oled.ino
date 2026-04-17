@@ -1,32 +1,37 @@
 /*
- * Phantom Load Killer — Step 3: Relay Control + Manual Button
+ * Phantom Load Killer — Step 4: OLED Display
  * =============================================================
- * Adds over Step 2:
- *   - Relay physically cuts the mains Live wire on CUT state
- *   - Manual button restores power from CUT state
- *   - Safe relay init: relay ON (closed) at startup before calibration
+ * Adds over Step 3:
+ *   - 0.96" SSD1306 128×64 I2C OLED showing live V/I/W, state,
+ *     countdown timer, and a progress bar during IDLE
  *
  * Wiring (new in this step):
- *   Relay MODULE (not bare relay) — driver circuitry built in.
- *   GPIO26 → [1kΩ] → BC547 Base; BC547 Collector → Relay IN
- *   ESP32 VIN → Relay module VCC
- *   ESP32 GND → Relay module GND
- *   Relay module NO  → Mains Live out (to load)
- *   Relay module COM → Mains Live in  (from ACS712 IP–)
+ *   OLED SDA  → GPIO21
+ *   OLED SCL  → GPIO22
+ *   OLED VCC  → ESP32 3V3  (NOT VIN)
+ *   OLED GND  → ESP32 GND
  *
- *   GPIO32 → Tactile button → GND   (pull-up enabled internally)
- *            Press while in CUT → restores power (ACTIVE state)
- *
- * Relay logic (BC547 buffer inverts signal — ESP32 HIGH = relay ON):
- *   RELAY_ON  (HIGH) = GPIO HIGH → BC547 on → relay IN LOW → relay ON
- *   RELAY_OFF (LOW)  = GPIO LOW  → BC547 off → relay IN HIGH → relay OFF
- *
- * Pins (all):
+ * All previous wiring unchanged:
  *   GPIO34 — ACS712 output (10kΩ/22kΩ divider)
  *   GPIO35 — ZMPT101B output
  *   GPIO26 — Relay module IN (via BC547 buffer)
  *   GPIO32 — Manual restore button (active LOW, internal pull-up)
+ *
+ * Libraries required:
+ *   Adafruit SSD1306, Adafruit GFX Library
  */
+
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// ── OLED Setup ───────────────────────────────────────────────────────────────
+#define SCREEN_WIDTH  128
+#define SCREEN_HEIGHT  64
+#define OLED_RESET     -1
+#define OLED_ADDR    0x3C
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // ── Pin Definitions ──────────────────────────────────────────────────────────
 #define ACS712_PIN    34
@@ -34,35 +39,35 @@
 #define RELAY_PIN     26
 #define BUTTON_PIN    32
 
-// ── Relay helpers (active LOW module) ───────────────────────────────────────
-#define RELAY_ON  HIGH   // GPIO HIGH → BC547 saturates → relay IN = GND → relay energises
-#define RELAY_OFF LOW    // GPIO LOW  → BC547 off → relay IN = 5V → relay de-energises
+// ── Relay helpers (BC547 buffer inverts) ─────────────────────────────────────
+#define RELAY_ON  HIGH   // GPIO HIGH → BC547 on → relay IN LOW → relay energises
+#define RELAY_OFF LOW    // GPIO LOW  → BC547 off → relay IN HIGH → relay off
 
-// ── Calibration (from Phase 1) ────────────────────────────────────────────────
-const float ZMPT_VFACTOR = 0.246f;     // Calibrated: 267V raw → 240V target
-const float ACS712_SENSITIVITY  = 85.4f;   // ADC counts per Amp
+// ── Calibration ──────────────────────────────────────────────────────────────
+const float ZMPT_VFACTOR        = 0.246f;
+const float ACS712_SENSITIVITY  = 85.4f;
 
-// ── Detection Thresholds ──────────────────────────────────────────────────────
-const float ACTIVE_THRESHOLD_A  = 0.40f;   // Above this = device is ON
-const int   IDLE_TIMEOUT_SEC    = 10;      // Seconds idle before CUT (set to 10 for demo)
+// ── Detection Thresholds ─────────────────────────────────────────────────────
+const float ACTIVE_THRESHOLD_A  = 0.40f;
+const int   IDLE_TIMEOUT_SEC    = 10;
 
-// ── Button debounce ───────────────────────────────────────────────────────────
+// ── Button debounce ──────────────────────────────────────────────────────────
 const unsigned long DEBOUNCE_MS = 50;
 
-// ── Sampling ──────────────────────────────────────────────────────────────────
+// ── Sampling ─────────────────────────────────────────────────────────────────
 const int SAMPLES = 1000;
 
-// ── State Machine ─────────────────────────────────────────────────────────────
+// ── State Machine ────────────────────────────────────────────────────────────
 enum DeviceState { ACTIVE, IDLE, CUT };
 DeviceState state         = ACTIVE;
 unsigned long idleStartMs = 0;
 
-// ── Button debounce state ─────────────────────────────────────────────────────
-bool          lastButtonRaw   = HIGH;   // physical pin state last loop
+// ── Button debounce state ────────────────────────────────────────────────────
+bool          lastButtonRaw   = HIGH;
 unsigned long lastDebounceMs  = 0;
-bool          buttonPressed   = false;  // single-shot flag per press
+bool          buttonPressed   = false;
 
-// ── Zero offsets ──────────────────────────────────────────────────────────────
+// ── Zero offsets ─────────────────────────────────────────────────────────────
 float acs712_zero = 2133.0f;
 float zmpt_zero   = 2048.0f;
 
@@ -70,8 +75,8 @@ float zmpt_zero   = 2048.0f;
 const char* stateName(DeviceState s) {
     switch (s) {
         case ACTIVE: return "ACTIVE";
-        case IDLE:   return "IDLE  ";
-        case CUT:    return "CUT   ";
+        case IDLE:   return "IDLE";
+        case CUT:    return "CUT";
     }
     return "?";
 }
@@ -81,9 +86,9 @@ void setRelay(bool on) {
     digitalWrite(RELAY_PIN, on ? RELAY_ON : RELAY_OFF);
 }
 
-// ── Button: returns true once per physical press (debounced) ──────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 bool buttonWasPressed() {
-    bool reading = digitalRead(BUTTON_PIN);   // LOW when pressed (pull-up)
+    bool reading = digitalRead(BUTTON_PIN);
 
     if (reading != lastButtonRaw) {
         lastDebounceMs = millis();
@@ -91,13 +96,12 @@ bool buttonWasPressed() {
     }
 
     if ((millis() - lastDebounceMs) > DEBOUNCE_MS) {
-        // Stable reading — fire on falling edge (HIGH→LOW = press)
         if (reading == LOW && !buttonPressed) {
             buttonPressed = true;
             return true;
         }
         if (reading == HIGH) {
-            buttonPressed = false;   // Released — ready for next press
+            buttonPressed = false;
         }
     }
     return false;
@@ -141,6 +145,49 @@ float measureVoltageRMS() {
     return sqrtf((float)(sum / SAMPLES)) * ZMPT_VFACTOR;
 }
 
+// ── OLED update ──────────────────────────────────────────────────────────────
+void updateDisplay(float V, float I, float W) {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+
+    // Row 0: Voltage / Current
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.printf("%.1fV", V);
+    display.setCursor(64, 0);
+    display.printf("%.3fA", I);
+
+    // Row 1: Power (larger)
+    display.setTextSize(2);
+    display.setCursor(0, 14);
+    display.printf("%.1fW", W);
+
+    // Row 2: State
+    display.setTextSize(1);
+    display.setCursor(0, 36);
+    display.printf("State: %s", stateName(state));
+
+    // Row 3: Status line
+    display.setCursor(0, 48);
+    if (state == IDLE) {
+        unsigned long elapsedSec = (millis() - idleStartMs) / 1000UL;
+        unsigned long totalSec   = (unsigned long)IDLE_TIMEOUT_SEC;
+        unsigned long remaining  = (totalSec > elapsedSec) ? (totalSec - elapsedSec) : 0;
+        display.printf("Cut in: %lum %02lus", remaining / 60, remaining % 60);
+
+        // Progress bar
+        int barWidth = 120;
+        int filled = (int)((float)elapsedSec / (float)totalSec * barWidth);
+        if (filled > barWidth) filled = barWidth;
+        display.drawRect(4, 58, barWidth, 6, SSD1306_WHITE);
+        display.fillRect(4, 58, filled, 6, SSD1306_WHITE);
+    } else if (state == CUT) {
+        display.print("BTN to restore");
+    }
+
+    display.display();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
@@ -148,21 +195,36 @@ void setup() {
 
     // Relay first — power stays ON during boot
     pinMode(RELAY_PIN, OUTPUT);
-    setRelay(true);   // Close relay immediately — load has power
+    setRelay(true);
 
     // Button with internal pull-up
     pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+    // OLED init
+    Wire.begin(21, 22);
+    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+        Serial.print("[OLED] SSD1306 init FAILED\r\n");
+    } else {
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(10, 20);
+        display.print("PHANTOM LOAD KILLER");
+        display.setCursor(20, 40);
+        display.print("Calibrating...");
+        display.display();
+    }
 
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
 
     Serial.print("\r\n============================================\r\n");
-    Serial.print(" Phantom Load Killer — Step 3: Relay      \r\n");
+    Serial.print(" Phantom Load Killer — Step 4: OLED        \r\n");
     Serial.print("============================================\r\n");
     Serial.printf(" Active threshold : %.2f A\r\n", ACTIVE_THRESHOLD_A);
     Serial.printf(" Idle timeout     : %d sec\r\n", IDLE_TIMEOUT_SEC);
-    Serial.print(" Relay module     : active LOW, CLOSED at boot\r\n");
-    Serial.print("\r\nCalibrating (ensure no load, wire connected)...\r\n");
+    Serial.print(" OLED             : SSD1306 128x64 I2C\r\n");
+    Serial.print("\r\nCalibrating (ensure no load)...\r\n");
     delay(1000);
     calibrateZero();
 
@@ -186,7 +248,7 @@ void loop() {
         Serial.print("\r\n>>> BUTTON PRESSED — Power restored\r\n\r\n");
     }
 
-    // ── State machine transitions ──────────────────────────────────────────
+    // ── State machine ────────────────────────────────────────────────────
     switch (state) {
 
         case ACTIVE:
@@ -204,24 +266,23 @@ void loop() {
                 unsigned long timeoutMs = (unsigned long)IDLE_TIMEOUT_SEC * 1000UL;
                 if (elapsedMs >= timeoutMs) {
                     state = CUT;
-                    setRelay(false);   // ← PHYSICALLY CUT POWER
+                    setRelay(false);
                 }
             }
             break;
 
         case CUT:
-            // Power stays cut until user presses button
             break;
     }
 
-    // ── State change notification ──────────────────────────────────────────
+    // ── State change notification ────────────────────────────────────────
     if (state != prevState) {
         const char* relayStr = (state == CUT) ? "RELAY OPEN — power cut" : "relay closed";
         Serial.printf("\r\n>>> STATE: %s -> %s  [%s]\r\n\r\n",
                       stateName(prevState), stateName(state), relayStr);
     }
 
-    // ── Print live reading ─────────────────────────────────────────────────
+    // ── Serial output ────────────────────────────────────────────────────
     char statusBuf[20] = "               ";
     if (state == IDLE) {
         unsigned long elapsedSec = (millis() - idleStartMs) / 1000UL;
@@ -230,12 +291,13 @@ void loop() {
         snprintf(statusBuf, sizeof(statusBuf), "%2lum %02lus left", remaining / 60, remaining % 60);
     } else if (state == CUT) {
         snprintf(statusBuf, sizeof(statusBuf), "btn to restore  ");
-    } else {
-        snprintf(statusBuf, sizeof(statusBuf), "               ");
     }
 
     Serial.printf("  %s |  %5.1f V  |  %5.3f A  |  %5.1f W  |  %s\r\n",
                   stateName(state), V, I, W, statusBuf);
+
+    // ── OLED output ──────────────────────────────────────────────────────
+    updateDisplay(V, I, W);
 
     delay(500);
 }

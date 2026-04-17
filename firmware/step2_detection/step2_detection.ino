@@ -25,7 +25,7 @@
 #define ZMPT101B_PIN  35
 
 // ── Calibration (from Phase 1) ────────────────────────────────────────────────
-const float ZMPT_VFACTOR      = 0.428f;   // Calibrated to this specific module
+const float ZMPT_VFACTOR      = 0.200f;   // Recalibrated: 0.220 × (236/260)
 const float ACS712_SENSITIVITY = 85.4f;   // ADC counts per Amp
 
 // ── Detection Thresholds ──────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ float measureCurrentRMS() {
         delayMicroseconds(200);
     }
     float result = sqrtf((float)(sum / SAMPLES));
-    return (result < 0.05f) ? 0.0f : result;
+    return (result < 0.12f) ? 0.0f : result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
